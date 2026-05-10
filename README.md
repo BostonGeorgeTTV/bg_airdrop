@@ -1,5 +1,10 @@
 # bg_airdrop
 
+https://www.youtube.com/watch?v=CF_teO4QrbU
+
+<img width="1672" height="941" alt="bgairdrop" src="https://github.com/user-attachments/assets/18584f3d-29e2-4fdd-9eb7-749c0fd21967" />
+
+
 Risorsa FiveM per airdrop configurabili con prop custom, ox_target e ox_inventory.
 
 ## Funzioni incluse
