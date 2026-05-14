@@ -9,7 +9,7 @@ Config.Enabled = true
 -- Timer in secondi.
 Config.FirstDropDelaySeconds = 60          -- primo airdrop dopo l'avvio della risorsa in secondi
 Config.IntervalSeconds = 30 * 60          -- tempo tra un airdrop concluso e il prossimo in secondi
-Config.DeleteAfterLandingSeconds = 15 * 60 -- tempo massimo a terra prima della cancellazione automatica in secondi
+Config.DeleteAfterLandingSeconds = 5 * 60  -- tempo massimo a terra prima della cancellazione automatica in secondi
 Config.EmptyCheckSeconds = 2              -- ogni quanti secondi controllare se lo stash è stato svuotato
 
 -- Caduta.
