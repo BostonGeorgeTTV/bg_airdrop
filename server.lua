@@ -3,15 +3,42 @@ local nextDropAt = 0
 local framework = 'standalone'
 local finishDrop
 
+local function getConfiguredSeconds(value, fallback)
+    local parsed = tonumber(value)
+    if not parsed then
+        return fallback
+    end
+
+    return math.max(1, math.floor(parsed))
+end
+
+local function getDeleteAfterLandingSeconds()
+    return getConfiguredSeconds(Config.DeleteAfterLandingSeconds, 900)
+end
+
+local function getFallDurationSeconds()
+    return getConfiguredSeconds(Config.Fall and Config.Fall.DurationSeconds, 60)
+end
+
 local function beginExpiryTimer(dropId)
     if not activeDrop or activeDrop.id ~= dropId or not activeDrop.expiresAt then return end
 
-    local expiresAt = activeDrop.expiresAt
-    local waitMs = math.max(0, (expiresAt - os.time()) * 1000)
+    if activeDrop.expiryThreadStarted then
+        return
+    end
 
-    SetTimeout(waitMs, function()
-        if activeDrop and activeDrop.id == dropId and activeDrop.expiresAt and os.time() >= activeDrop.expiresAt then
-            finishDrop('expired')
+    activeDrop.expiryThreadStarted = true
+
+    CreateThread(function()
+        while activeDrop and activeDrop.id == dropId do
+            local now = os.time()
+
+            if activeDrop.expiresAt and now >= activeDrop.expiresAt then
+                finishDrop('expired')
+                break
+            end
+
+            Wait(1000)
         end
     end)
 end
@@ -251,9 +278,11 @@ local function markDropLanded(dropId, source, coords)
 
     local now = os.time()
 
-    if type(source) == 'number' and now < (activeDrop.landsAt - 2) then
-        debugPrint(('Segnale atterraggio ignorato per %s: troppo presto.'):format(dropId))
-        return false
+    -- Il client può segnalare l'atterraggio con un leggero anticipo per via del sync.
+    -- Non blocchiamo più in modo rigido l'evento: se arriva troppo presto lo accettiamo comunque,
+    -- ma manteniamo un log debug per capire eventuali anomalie.
+    if type(source) == 'number' and now < (activeDrop.landsAt - 5) then
+        debugPrint(('Segnale atterraggio anticipato per %s da %s. landsAt=%s now=%s'):format(dropId, source, activeDrop.landsAt, now))
     end
 
     local groundCoords = normaliseCoords(coords)
@@ -263,16 +292,25 @@ local function markDropLanded(dropId, source, coords)
         activeDrop.groundCoords = activeDrop.coords
     end
 
-    if activeDrop.landed then
-        return true
+    if not activeDrop.landed then
+        activeDrop.landed = true
+        activeDrop.landedAt = now
+        activeDrop.nextEmptyCheck = now + math.max(1, Config.EmptyCheckSeconds or 2)
     end
 
-    activeDrop.landed = true
-    activeDrop.landedAt = now
-    activeDrop.expiresAt = now + math.max(1, Config.DeleteAfterLandingSeconds or 900)
-    activeDrop.nextEmptyCheck = now + math.max(1, Config.EmptyCheckSeconds or 2)
-
-    debugPrint(('Airdrop %s marcato a terra da %s. Scade alle %s.'):format(dropId, tostring(source or 'server'), activeDrop.expiresAt))
+    -- Questa è la parte importante: il timeout viene sempre garantito quando il drop è a terra.
+    -- Prima, se qualcosa saltava nel flow di atterraggio, il drop poteva rimanere attivo finché lo stash non veniva svuotato.
+    if not activeDrop.expiresAt then
+        activeDrop.expiresAt = now + getDeleteAfterLandingSeconds()
+        debugPrint(('Airdrop %s marcato a terra da %s. Scade tra %s secondi. expiresAt=%s'):format(
+            dropId,
+            tostring(source or 'server'),
+            getDeleteAfterLandingSeconds(),
+            activeDrop.expiresAt
+        ))
+    else
+        debugPrint(('Airdrop %s già a terra. Timer già presente: expiresAt=%s'):format(dropId, activeDrop.expiresAt))
+    end
 
     beginExpiryTimer(dropId)
     return true
@@ -348,8 +386,10 @@ local function startAirdrop(pointIndex)
         label = label,
         heading = math.random(0, 359) + 0.0,
         createdAt = now,
-        landsAt = now + (Config.Fall.DurationSeconds or 60),
+        landsAt = now + getFallDurationSeconds(),
         expiresAt = nil,
+        emergencyExpiresAt = now + getFallDurationSeconds() + getDeleteAfterLandingSeconds() + 10,
+        expiryThreadStarted = false,
         landed = false,
         landedAt = nil,
         openedBy = {},
@@ -554,15 +594,24 @@ CreateThread(function()
         if activeDrop then
             local now = os.time()
 
-            if not activeDrop.landed and now >= activeDrop.landsAt then
+            if activeDrop and not activeDrop.landed and now >= activeDrop.landsAt then
                 markDropLanded(activeDrop.id, 'server_fallback')
             end
 
-            if activeDrop and activeDrop.expiresAt and now >= activeDrop.expiresAt then
+            -- Safety fallback: anche se per qualunque motivo l'evento landed o il timer dedicato non partono,
+            -- il drop non può restare attivo oltre questo limite.
+            if activeDrop and activeDrop.emergencyExpiresAt and now >= activeDrop.emergencyExpiresAt then
+                finishDrop('expired')
+            elseif activeDrop and activeDrop.expiresAt and now >= activeDrop.expiresAt then
                 finishDrop('expired')
             elseif activeDrop and activeDrop.landed then
+                if not activeDrop.expiresAt then
+                    activeDrop.expiresAt = now + getDeleteAfterLandingSeconds()
+                    beginExpiryTimer(activeDrop.id)
+                end
+
                 local checkEvery = math.max(1, Config.EmptyCheckSeconds or 2)
-                if not activeDrop.nextEmptyCheck or now >= activeDrop.nextEmptyCheck then
+                if activeDrop and (not activeDrop.nextEmptyCheck or now >= activeDrop.nextEmptyCheck) then
                     activeDrop.nextEmptyCheck = now + checkEvery
 
                     if not stashHasItems(activeDrop.stashId) then
